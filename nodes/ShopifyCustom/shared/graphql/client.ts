@@ -71,6 +71,28 @@ const SHOPIFY_OAUTH2_HEADER_OPTIONS: IOAuth2Options = {
 	keyToIncludeInAccessTokenHeader: 'X-Shopify-Access-Token',
 };
 
+// Mutations that require @idempotent directive support
+// These mutations become MANDATORY for idempotency as of 2026-04
+const MUTATIONS_REQUIRING_IDEMPOTENCY = [
+	'inventoryAdjustQuantities',
+	'inventorySetQuantities',
+	'inventoryActivate',
+	'inventoryShipmentReceive',
+	'inventoryShipmentCreate',
+	'inventoryShipmentCreateInTransit',
+	'inventoryShipmentAddItems',
+	'inventoryTransferCreate',
+	'inventoryTransferCreateAsReadyToShip',
+	'inventoryTransferDuplicate',
+	'inventoryTransferSetItems',
+	'inventorySetScheduledChanges',
+	'inventoryMoveQuantities',
+	'inventorySetOnHandQuantities',
+	'locationActivate',
+	'locationDeactivate',
+	'refundCreate',
+];
+
 export function normalizeShopSubdomain(input: string): string {
 	return input.trim().replace(/^https?:\/\//, '').replace(/\.myshopify\.com\/?$/, '');
 }
@@ -236,6 +258,10 @@ function isMutation(query: string): boolean {
 	return /^\s*mutation\s/i.test(trimmedQuery);
 }
 
+function mutationRequiresIdempotency(query: string): boolean {
+	return MUTATIONS_REQUIRING_IDEMPOTENCY.some((mutation) => query.includes(mutation));
+}
+
 function generateIdempotencyKey(): string {
 	return randomUUID();
 }
@@ -336,7 +362,7 @@ async function resolveAdminAccessToken(
 
 export interface GraphQLExecuteOptions {
 	idempotencyKey?: string;
-	autoGenerateIdempotencyKey?: boolean;
+	skipIdempotencyGeneration?: boolean;
 }
 
 export async function executeShopifyGraphql<TData = IDataObject>(
@@ -351,20 +377,17 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 	);
 	const url = buildGraphqlUrl(credentials);
 
-	// Determine idempotency key: explicit > auto-generated for mutations > none
-	let idempotencyKey: string | undefined;
-	if (options?.idempotencyKey) {
-		idempotencyKey = options.idempotencyKey;
-	} else if (options?.autoGenerateIdempotencyKey !== false && isMutation(query)) {
-		// Auto-generate for mutations by default
-		idempotencyKey = generateIdempotencyKey();
+	// Determine if this mutation needs an idempotency key
+	let finalVariables = { ...variables };
+	if (
+		isMutation(query) &&
+		mutationRequiresIdempotency(query) &&
+		!options?.skipIdempotencyGeneration
+	) {
+		// Use provided key or generate a new one
+		finalVariables.idempotencyKey =
+			options?.idempotencyKey || generateIdempotencyKey();
 	}
-
-	const headers = {
-		'Content-Type': 'application/json',
-		Accept: 'application/json',
-		...(idempotencyKey && { 'Idempotency-Key': idempotencyKey }),
-	};
 
 	if (authentication === 'oAuth2') {
 		try {
@@ -374,10 +397,13 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 				{
 					url,
 					method: 'POST',
-					headers,
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json',
+					},
 					body: {
 						query,
-						variables,
+						variables: finalVariables,
 					},
 					json: true,
 				},
@@ -410,12 +436,13 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 				url,
 				method: 'POST',
 				headers: {
-					...headers,
+					'Content-Type': 'application/json',
+					Accept: 'application/json',
 					'X-Shopify-Access-Token': accessToken,
 				},
 				body: {
 					query,
-					variables,
+					variables: finalVariables,
 				},
 				json: true,
 			};
