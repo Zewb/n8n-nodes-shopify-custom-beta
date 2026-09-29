@@ -71,7 +71,8 @@ const SHOPIFY_OAUTH2_HEADER_OPTIONS: IOAuth2Options = {
 	keyToIncludeInAccessTokenHeader: 'X-Shopify-Access-Token',
 };
 
-// Mutations that require @idempotent directive support (Shopify GraphQL API)
+// Mutations that require @idempotent directive support
+// These mutations become MANDATORY for idempotency as of 2026-04
 const MUTATIONS_REQUIRING_IDEMPOTENCY = [
 	'inventoryAdjustQuantities',
 	'inventorySetQuantities',
@@ -376,13 +377,14 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 	);
 	const url = buildGraphqlUrl(credentials);
 
-	// Determine if this mutation needs an idempotency key and inject it if required
-	const finalVariables: IDataObject = { ...variables };
+	// Determine if this mutation needs an idempotency key
+	let finalVariables = { ...variables };
 	if (
 		isMutation(query) &&
 		mutationRequiresIdempotency(query) &&
 		!options?.skipIdempotencyGeneration
 	) {
+		// Use provided key or generate a new one
 		finalVariables.idempotencyKey =
 			options?.idempotencyKey || generateIdempotencyKey();
 	}
