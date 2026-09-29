@@ -9,6 +9,7 @@ import type {
 	IWebhookFunctions,
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
+import { randomUUID } from 'crypto';
 
 export const SHOPIFY_CUSTOM_ADMIN_CREDENTIAL_NAME = 'shopifyCustomAdminApi';
 export const SHOPIFY_CUSTOM_OAUTH2_CREDENTIAL_NAME = 'shopifyCustomOAuth2Api';
@@ -230,6 +231,15 @@ function getHttpErrorMessage(error: unknown): string {
 	return String(typedError.message ?? 'Unknown error');
 }
 
+function isMutation(query: string): boolean {
+	const trimmedQuery = query.trim();
+	return /^\s*mutation\s/i.test(trimmedQuery);
+}
+
+function generateIdempotencyKey(): string {
+	return randomUUID();
+}
+
 async function requestClientCredentialsAccessToken(
 	context: ShopifyFunctionContext,
 	credentials: IShopifyCredentialData,
@@ -324,16 +334,37 @@ async function resolveAdminAccessToken(
 	return requestClientCredentialsAccessToken(context, credentials, itemIndex, forceRefresh);
 }
 
+export interface GraphQLExecuteOptions {
+	idempotencyKey?: string;
+	autoGenerateIdempotencyKey?: boolean;
+}
+
 export async function executeShopifyGraphql<TData = IDataObject>(
 	context: ShopifyFunctionContext,
 	query: string,
 	variables: IDataObject = {},
 	itemIndex = 0,
+	options?: GraphQLExecuteOptions,
 ): Promise<IShopifyGraphQLResponse<TData>> {
 	const { authentication, credentialName, credentials } = await getSelectedShopifyCredentials(
 		context,
 	);
 	const url = buildGraphqlUrl(credentials);
+
+	// Determine idempotency key: explicit > auto-generated for mutations > none
+	let idempotencyKey: string | undefined;
+	if (options?.idempotencyKey) {
+		idempotencyKey = options.idempotencyKey;
+	} else if (options?.autoGenerateIdempotencyKey !== false && isMutation(query)) {
+		// Auto-generate for mutations by default
+		idempotencyKey = generateIdempotencyKey();
+	}
+
+	const headers = {
+		'Content-Type': 'application/json',
+		Accept: 'application/json',
+		...(idempotencyKey && { 'Idempotency-Key': idempotencyKey }),
+	};
 
 	if (authentication === 'oAuth2') {
 		try {
@@ -343,10 +374,7 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 				{
 					url,
 					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						Accept: 'application/json',
-					},
+					headers,
 					body: {
 						query,
 						variables,
@@ -382,8 +410,7 @@ export async function executeShopifyGraphql<TData = IDataObject>(
 				url,
 				method: 'POST',
 				headers: {
-					'Content-Type': 'application/json',
-					Accept: 'application/json',
+					...headers,
 					'X-Shopify-Access-Token': accessToken,
 				},
 				body: {
